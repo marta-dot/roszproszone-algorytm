@@ -23,7 +23,7 @@ struct tagNames_t{
 const char const *tag2string( int tag )
 {
     for (int i=0; i <sizeof(tagNames)/sizeof(struct tagNames_t);i++) {
-	if ( tagNames[i].tag == tag )  return tagNames[i].name;
+        if ( tagNames[i].tag == tag )  return tagNames[i].name;
     }
     return "<unknown>";
 }
@@ -40,7 +40,7 @@ void inicjuj_typ_pakietu()
     int       blocklengths[NITEMS] = {1,1,1,1};
     MPI_Datatype typy[NITEMS] = {MPI_INT, MPI_INT, MPI_INT,MPI_CHAR};
 
-    MPI_Aint     offsets[NITEMS]; 
+    MPI_Aint     offsets[NITEMS];
     offsets[0] = offsetof(packet_t, ts);
     offsets[1] = offsetof(packet_t, src);
     offsets[2] = offsetof(packet_t, data);
@@ -66,8 +66,8 @@ void sendPacket(packet_t *pkt, int destination, int tag)
 void changeState( state_t newState )
 {
     pthread_mutex_lock( &stateMut );
-    if (stan==InFinish) { 
-	pthread_mutex_unlock( &stateMut );
+    if (stan==InFinish) {
+        pthread_mutex_unlock( &stateMut );
         return;
     }
     stan = newState;
@@ -87,11 +87,32 @@ int comparePackets(const void *a, const void *b){
 
 void addRequestToQueue(packet_t *pkt){
     pthread_mutex_lock(&queueMut);
-    requestQueue[queueSize++] = *pkt;
-    qsort(requestQueue, queueSize, sizeof(packet_t), comparePackets);
-    pthread_mutex_unlock(&queueMut);
-    debug("Proces %d: Dodaję do kolejki REQUEST od %d (ts = %d)", rank, pkt->src, pkt->ts);
 
+    // Sprawdź czy żądanie już nie istnieje w kolejce
+    for (int i = 0; i < queueSize; i++) {
+        if (requestQueue[i].src == pkt->src) {
+            pthread_mutex_unlock(&queueMut);
+            debug("Żądanie od %d już jest w kolejce", pkt->src);
+            return;
+        }
+    }
+
+    if (queueSize < MAX_QUEUE) {
+        requestQueue[queueSize++] = *pkt;
+        qsort(requestQueue, queueSize, sizeof(packet_t), comparePackets);
+        debug("Dodałem do kolejki REQUEST od %d (ts = %d), rozmiar kolejki: %d",
+              pkt->src, pkt->ts, queueSize);
+
+        // Debug: wyświetl całą kolejkę
+        debug("Kolejka żądań:");
+        for (int i = 0; i < queueSize; i++) {
+            debug("  [%d] src=%d, ts=%d", i, requestQueue[i].src, requestQueue[i].ts);
+        }
+    } else {
+        debug("BŁĄD: Kolejka żądań jest pełna!");
+    }
+
+    pthread_mutex_unlock(&queueMut);
 }
 
 void removeRequestFromQueue(int src){
@@ -103,7 +124,7 @@ void removeRequestFromQueue(int src){
             }
             queueSize--;
             break;
-            
+
         }
     }
     pthread_mutex_unlock(&queueMut);
@@ -127,12 +148,10 @@ void incrementClock(int recived_ts){
 }
 
 // //sekcja krytyczna
-
 void enterCS(){
     debug("Wchodzę do sekcji krytycznej");
-    changeState(InSection);
 
-    sleep(3);
+    sleep(3); // symulacja pracy w sekcji krytycznej
 
     pthread_mutex_lock(&csMut);
     if (processType == 'B') {
@@ -146,21 +165,65 @@ void enterCS(){
     // Przygotuj i wyślij RELEASE
     packet_t release;
     release.src = rank;
+    release.type = processType;
+
     pthread_mutex_lock(&clockMut);
     lamportClock++;
     release.ts = lamportClock;
     pthread_mutex_unlock(&clockMut);
 
+    debug("Wysyłam RELEASE do wszystkich procesów");
+
+    // Wyślij RELEASE do wszystkich innych procesów
     for (int i = 0; i < size; i++) {
-        if (i != rank) sendPacket(&release, i, RELEASE);
+        if (i != rank) {
+            sendPacket(&release, i, RELEASE);
+        }
     }
 
-    ackCount = 0;
+    // Bezpiecznie usuń własne żądanie i zresetuj stan
+    pthread_mutex_lock(&stateMut);
     removeRequestFromQueue(rank);
-    changeState(InRun);
+    ackCount = 0;
+
+    pthread_mutex_lock(&waitingMut);
+    waitingForCS = 0;
+    pthread_mutex_unlock(&waitingMut);
+
+    stan = InRun;
+    pthread_mutex_unlock(&stateMut);
+
+    debug("Wyszedłem z sekcji krytycznej");
 }
 
-// void exitCS(){
-//     debug("WYCHODZĘ Z CS");
-//     remo
-// }
+int canEnterCS() {
+    int canEnter = 0;
+
+    pthread_mutex_lock(&waitingMut);
+    if (!waitingForCS) {
+        pthread_mutex_unlock(&waitingMut);
+        return 0; // Jeśli nie czekamy na CS, to nie możemy wejść
+    }
+    pthread_mutex_unlock(&waitingMut);
+
+    pthread_mutex_lock(&queueMut);
+    pthread_mutex_lock(&stateMut);
+
+    if (ackCount >= (size - 1) &&
+        queueSize > 0 &&
+        requestQueue[0].src == rank) {
+        canEnter = 1;
+        debug("Mogę wejść do CS: ackCount=%d/%d, pierwszyWKolejce=TAK",
+              ackCount, size-1);
+    } else {
+        debug("Nie mogę wejść do CS: ackCount=%d/%d, pierwszyWKolejce=%s, queueSize=%d",
+              ackCount, size-1,
+              (queueSize > 0 && requestQueue[0].src == rank) ? "TAK" : "NIE",
+              queueSize);
+    }
+
+    pthread_mutex_unlock(&stateMut);
+    pthread_mutex_unlock(&queueMut);
+
+    return canEnter;
+}

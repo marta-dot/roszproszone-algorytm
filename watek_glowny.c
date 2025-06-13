@@ -8,51 +8,58 @@ void mainLoop()
     while (stan != InFinish) {
         switch(stan) {
             case InRun:
-                debug("Zmieniam stan na wysyłanie");
-                changeState( InSend );
+                debug("Chcę wejść do sekcji krytycznej - wysyłam REQUESTy");
 
+                // Przygotuj żądanie
                 packet_t req;
                 req.type = processType;
-
-                if(req.type == 'B'){
-                    debug("proces BABCIA");
-                } else {
-                    debug("STUDENTKA");
-                }
+                req.src = rank;
 
                 pthread_mutex_lock(&clockMut);
                 lamportClock++;
                 req.ts = lamportClock;
                 pthread_mutex_unlock(&clockMut);
-                req.src = rank;
 
+                // Ustaw flagę oczekiwania
+                pthread_mutex_lock(&waitingMut);
+                waitingForCS = 1;
+                pthread_mutex_unlock(&waitingMut);
+
+                // Zresetuj licznik ACK
+                pthread_mutex_lock(&stateMut);
+                ackCount = 0;
+                pthread_mutex_unlock(&stateMut);
+
+                // Dodaj własne żądanie do kolejki
                 addRequestToQueue(&req);
 
+                // Wyślij REQUEST do wszystkich innych procesów
                 for (int i = 0; i < size; i++) {
-                    if (i != rank)
+                    if (i != rank) {
                         sendPacket(&req, i, REQUEST);
+                    }
                 }
 
                 changeState(IWait);
-                debug("Skończyłem wysyłać, teraz czekam");
+                debug("Wysłałem REQUESTy, teraz czekam na odpowiedzi");
                 break;
 
             case IWait:
-                
+                // Czekamy na ACKi i sprawdzamy w wątku komunikacyjnym
                 break;
 
             case InSection:
-                // też nic — sterowane przez `startKomWatek()`
+                // Obsługiwane przez enterCS()
                 break;
 
             case InSend:
-                // też nic — ten stan jest pośredni
+                // Stan pośredni
                 break;
 
             default:
                 break;
         }
 
-        sleep(1); // delikatne odciążenie CPU
+        sleep(2 + random() % 3); // losowy czas między próbami wejścia do CS
     }
 }

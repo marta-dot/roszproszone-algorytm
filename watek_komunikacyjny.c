@@ -6,22 +6,22 @@
 void *startKomWatek(void *ptr)
 {
     MPI_Status status;
-    int is_message = FALSE;
     packet_t pakiet;
-    /* Obrazuje pętlę odbierającą pakiety o różnych typach */
-    while ( stan!=InFinish ) {
-	debug("czekam na recv");
-        MPI_Recv( &pakiet, 1, MPI_PAKIET_T, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
+
+    while (stan != InFinish) {
+        debug("Czekam na recv");
+        MPI_Recv(&pakiet, 1, MPI_PAKIET_T, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
 
         incrementClock(pakiet.ts);
 
         switch (status.MPI_TAG) {
-            case FINISH: 
+            case FINISH:
+                debug("Otrzymałem FINISH - kończę");
                 changeState(InFinish);
                 break;
-                
-            case REQUEST: 
-                debug("Dostałem REQUEST od %d (ts: %d)", pakiet.src, pakiet.ts);
+
+            case REQUEST:
+                debug("Otrzymałem REQUEST od %d (ts: %d)", pakiet.src, pakiet.ts);
                 addRequestToQueue(&pakiet);
 
                 // Odsyłamy ACK
@@ -31,34 +31,34 @@ void *startKomWatek(void *ptr)
                 ack.ts = lamportClock;
                 pthread_mutex_unlock(&clockMut);
                 ack.src = rank;
+                ack.type = processType;
                 sendPacket(&ack, pakiet.src, ACK);
                 break;
 
-            case ACK: 
-                debug("Dostałem ACK od %d", pakiet.src);
-                pthread_mutex_lock(&ackMut);
+            case ACK:
+                debug("Otrzymałem ACK od %d", pakiet.src);
+                pthread_mutex_lock(&stateMut);
                 ackCount++;
-                int should_enter = (ackCount == size - 1) && amIFirstInQueue();
-                pthread_mutex_unlock(&ackMut);
-                
-                if (should_enter) {
-                    enterCS();
-                }
+                debug("Liczba ACK: %d/%d", ackCount, size-1);
+                pthread_mutex_unlock(&stateMut);
                 break;
 
             case RELEASE:
-                debug("Dostałem RELEASE od %d", pakiet.src);
-                incrementClock(pakiet.ts);
+                debug("Otrzymałem RELEASE od %d", pakiet.src);
                 removeRequestFromQueue(pakiet.src);
-
-                if (ackCount == size - 1 && amIFirstInQueue() && stan != InSection) {
-                    enterCS();
-                }
-
                 break;
-                
+
             default:
+                debug("Nieznany typ wiadomości: %d", status.MPI_TAG);
                 break;
         }
+
+        // Sprawdź czy można wejść do sekcji krytycznej
+        if (stan != InSection && canEnterCS()) {
+            debug("Mogę wejść do sekcji krytycznej!");
+            changeState(InSection);
+            enterCS();
+        }
     }
+    return NULL;
 }

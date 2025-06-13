@@ -35,5 +35,6 @@ void removeRequestFromQueue(int src);
 int amIFirstInQueue();
 void incrementClock(int recived_ts);
 void enterCS();
+int canEnterCS(void);
 
 #endif

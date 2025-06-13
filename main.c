@@ -18,6 +18,8 @@ char processType;
 int p = 0, k = 0;
 pthread_mutex_t csMut = PTHREAD_MUTEX_INITIALIZER;
 
+volatile int waitingForCS = 0;
+pthread_mutex_t waitingMut = PTHREAD_MUTEX_INITIALIZER;
 
 void finalizuj()
 {
@@ -33,22 +35,22 @@ void check_thread_support(int provided)
 {
     printf("THREAD SUPPORT: chcemy %d. Co otrzymamy?\n", provided);
     switch (provided) {
-        case MPI_THREAD_SINGLE: 
+        case MPI_THREAD_SINGLE:
             printf("Brak wsparcia dla wątków, kończę\n");
             /* Nie ma co, trzeba wychodzić */
-	    fprintf(stderr, "Brak wystarczającego wsparcia dla wątków - wychodzę!\n");
-	    MPI_Finalize();
-	    exit(-1);
-	    break;
-        case MPI_THREAD_FUNNELED: 
+            fprintf(stderr, "Brak wystarczającego wsparcia dla wątków - wychodzę!\n");
+            MPI_Finalize();
+            exit(-1);
+            break;
+        case MPI_THREAD_FUNNELED:
             printf("tylko te wątki, ktore wykonaly mpi_init_thread mogą wykonać wołania do biblioteki mpi\n");
-	    break;
-        case MPI_THREAD_SERIALIZED: 
+            break;
+        case MPI_THREAD_SERIALIZED:
             /* Potrzebne zamki wokół wywołań biblioteki MPI */
             printf("tylko jeden watek naraz może wykonać wołania do biblioteki MPI\n");
-	    break;
+            break;
         case MPI_THREAD_MULTIPLE: printf("Pełne wsparcie dla wątków\n"); /* tego chcemy. Wszystkie inne powodują problemy */
-	    break;
+            break;
         default: printf("Nikt nic nie wie\n");
     }
 }
@@ -60,7 +62,7 @@ int main(int argc, char **argv)
     int provided;
     MPI_Init_thread(&argc, &argv, MPI_THREAD_MULTIPLE, &provided);
     check_thread_support(provided);
-    
+
     inicjuj_typ_pakietu(); // tworzy typ pakietu
 
     packet_t pkt;
@@ -73,8 +75,7 @@ int main(int argc, char **argv)
     pthread_create( &threadKom, NULL, startKomWatek , 0);
 
     mainLoop();
-    
+
     finalizuj();
     return 0;
 }
-
