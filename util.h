@@ -38,5 +38,6 @@ int amIFirstInQueue();
 void incrementClock(int recived_ts);
 void enterCS();
 int canEnterCS(void);
+void giveUpTurn();
 
 #endif

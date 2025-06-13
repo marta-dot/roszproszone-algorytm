@@ -15,7 +15,7 @@ pthread_mutex_t ackMut = PTHREAD_MUTEX_INITIALIZER;
 
 char processType;
 
-int p = 0, k = 0;
+int p = 5, k = 0;
 pthread_mutex_t csMut = PTHREAD_MUTEX_INITIALIZER;
 
 volatile int waitingForCS = 0;

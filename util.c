@@ -150,24 +150,28 @@ void incrementClock(int recived_ts){
 }
 
 // //sekcja krytyczna
-void enterCS(){
-    debug("Wchodzę do sekcji krytycznej");
+void enterCS() {
+    debug("Wszedłem do sekcji krytycznej. Wykonuję akcję.");
 
-    sleep(3); // symulacja pracy w sekcji krytycznej
-
+    // Mamy gwarancję, że możemy wykonać akcję, więc robimy to bez sprawdzania
     pthread_mutex_lock(&csMut);
     if (processType == 'B') {
-        p++; // babcia dodaje słoik
-    } else {
-        k++; // studentka dodaje konfiturę
+        p--;
+        k++;
+        debug("Babcia wymieniła słoik na konfiturę.");
+    } else { // Studentka
+        k--;
+        p++;
+        debug("Studentka wymieniła konfiturę na słoik.");
     }
-    debug("STAN LOKALNY: %d słoików, Studentki: %d konfitur", p, k);
+    debug("STAN PO ZMIANIE: Słoiki: %d, Konfitury: %d", p, k);
 
-    debug("Rozgłaszam aktualny stan słoików i konfitur");
+    // Rozgłaszamy UPDATE ze zmienionym stanem
+    debug("Rozgłaszam zaktualizowany stan zasobów.");
     packet_t update_pkt;
     update_pkt.src = rank;
-    update_pkt.p_val = p; // aktualna liczba słoików
-    update_pkt.k_val = k; // aktualna liczba konfitur
+    update_pkt.p_val = p;
+    update_pkt.k_val = k;
 
     pthread_mutex_lock(&clockMut);
     lamportClock++;
@@ -179,10 +183,59 @@ void enterCS(){
             sendPacket(&update_pkt, i, UPDATE);
         }
     }
-
     pthread_mutex_unlock(&csMut);
 
-    // Przygotuj i wyślij RELEASE
+    // Po wykonanej pracy, zwalniamy kolejkę używając naszej nowej funkcji
+    giveUpTurn();
+
+    debug("Wyszedłem z sekcji krytycznej po udanej operacji.");
+}
+
+int canEnterCS() {
+    // Sprawdzenie ogólnych warunków Lamporta
+    pthread_mutex_lock(&waitingMut);
+    if (!waitingForCS) {
+        pthread_mutex_unlock(&waitingMut);
+        return 0;
+    }
+    pthread_mutex_unlock(&waitingMut);
+
+    pthread_mutex_lock(&stateMut);
+    int allAcksReceived = (ackCount >= (size - 1));
+    pthread_mutex_unlock(&stateMut);
+
+    if (!allAcksReceived || !amIFirstInQueue()) {
+        return 0; // Nie nasza kolej, czekamy dalej
+    }
+
+    // --- OSTATECZNY SPRAWDZIAN ZASOBÓW ---
+    // Mamy wszystkie ACK i jesteśmy pierwsi w kolejce.
+    // Sprawdzamy, czy nasza akcja jest w ogóle możliwa.
+    int resource_available = 0;
+    pthread_mutex_lock(&csMut);
+    if (processType == 'B' && p > 0) {
+        resource_available = 1;
+    } else if (processType == 'S' && k > 0) {
+        resource_available = 1;
+    }
+    pthread_mutex_unlock(&csMut);
+
+    if (resource_available) {
+        // Tak, zasoby są dostępne. Możemy wejść.
+        debug("Wszystkie warunki spełnione. Wejście do CS dozwolone.");
+        return 1; // Zwracamy TRUE
+    } else {
+        // Nie, zasobów nie ma. Musimy zrezygnować z naszej tury, aby nie blokować innych.
+        debug("Mam pierwszeństwo, ale brak zasobów. ZWALNIAM KOLEJKĘ.");
+        giveUpTurn(); // Zwalniamy miejsce w kolejce
+        return 0; // Zwracamy FALSE
+    }
+}
+
+void giveUpTurn() {
+    debug("Zwalniam kolejkę i resetuję stan.");
+
+    // Wysyłamy RELEASE do wszystkich, informując, że skończyliśmy
     packet_t release;
     release.src = rank;
     release.type = processType;
@@ -192,58 +245,22 @@ void enterCS(){
     release.ts = lamportClock;
     pthread_mutex_unlock(&clockMut);
 
-    debug("Wysyłam RELEASE do wszystkich procesów");
-
-    // Wyślij RELEASE do wszystkich innych procesów
     for (int i = 0; i < size; i++) {
         if (i != rank) {
             sendPacket(&release, i, RELEASE);
         }
     }
 
-    // Bezpiecznie usuń własne żądanie i zresetuj stan
+    // Sprzątamy po sobie
+    removeRequestFromQueue(rank); // Usuwamy swoje żądanie z kolejki
+
     pthread_mutex_lock(&stateMut);
-    removeRequestFromQueue(rank);
-    ackCount = 0;
+    ackCount = 0; // Resetujemy liczniki
+    pthread_mutex_unlock(&stateMut);
 
     pthread_mutex_lock(&waitingMut);
     waitingForCS = 0;
     pthread_mutex_unlock(&waitingMut);
 
-    stan = InRun;
-    pthread_mutex_unlock(&stateMut);
-
-    debug("Wyszedłem z sekcji krytycznej");
-}
-
-int canEnterCS() {
-    int canEnter = 0;
-
-    pthread_mutex_lock(&waitingMut);
-    if (!waitingForCS) {
-        pthread_mutex_unlock(&waitingMut);
-        return 0; // Jeśli nie czekamy na CS, to nie możemy wejść
-    }
-    pthread_mutex_unlock(&waitingMut);
-
-    pthread_mutex_lock(&queueMut);
-    pthread_mutex_lock(&stateMut);
-
-    if (ackCount >= (size - 1) &&
-        queueSize > 0 &&
-        requestQueue[0].src == rank) {
-        canEnter = 1;
-        debug("Mogę wejść do CS: ackCount=%d/%d, pierwszyWKolejce=TAK",
-              ackCount, size-1);
-    } else {
-        debug("Nie mogę wejść do CS: ackCount=%d/%d, pierwszyWKolejce=%s, queueSize=%d",
-              ackCount, size-1,
-              (queueSize > 0 && requestQueue[0].src == rank) ? "TAK" : "NIE",
-              queueSize);
-    }
-
-    pthread_mutex_unlock(&stateMut);
-    pthread_mutex_unlock(&queueMut);
-
-    return canEnter;
+    changeState(InRun); // Wracamy do normalnego działania
 }
