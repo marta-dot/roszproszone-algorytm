@@ -37,14 +37,16 @@ void inicjuj_typ_pakietu()
        brzydzimy się czymś w rodzaju MPI_Send(&typ, sizeof(pakiet_t), MPI_BYTE....
     */
     /* sklejone z stackoverflow */
-    int       blocklengths[NITEMS] = {1,1,1,1};
-    MPI_Datatype typy[NITEMS] = {MPI_INT, MPI_INT, MPI_INT,MPI_CHAR};
+    int       blocklengths[NITEMS] = {1,1,1,1,1,1};
+    MPI_Datatype typy[NITEMS] = {MPI_INT, MPI_INT, MPI_INT,MPI_CHAR, MPI_INT, MPI_INT};
 
     MPI_Aint     offsets[NITEMS];
     offsets[0] = offsetof(packet_t, ts);
     offsets[1] = offsetof(packet_t, src);
     offsets[2] = offsetof(packet_t, data);
     offsets[3] = offsetof(packet_t, type);
+    offsets[4] = offsetof(packet_t, p_val);
+    offsets[5] = offsetof(packet_t, k_val);
 
 
     MPI_Type_create_struct(NITEMS, blocklengths, offsets, typy, &MPI_PAKIET_T);
@@ -159,7 +161,25 @@ void enterCS(){
     } else {
         k++; // studentka dodaje konfiturę
     }
-    debug("Babcie: %d słoików, Studentki: %d konfitur", p, k);
+    debug("STAN LOKALNY: %d słoików, Studentki: %d konfitur", p, k);
+
+    debug("Rozgłaszam aktualny stan słoików i konfitur");
+    packet_t update_pkt;
+    update_pkt.src = rank;
+    update_pkt.p_val = p; // aktualna liczba słoików
+    update_pkt.k_val = k; // aktualna liczba konfitur
+
+    pthread_mutex_lock(&clockMut);
+    lamportClock++;
+    update_pkt.ts = lamportClock;
+    pthread_mutex_unlock(&clockMut);
+
+    for (int i = 0; i < size; i++) {
+        if (i != rank) {
+            sendPacket(&update_pkt, i, UPDATE);
+        }
+    }
+
     pthread_mutex_unlock(&csMut);
 
     // Przygotuj i wyślij RELEASE

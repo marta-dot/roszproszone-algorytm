@@ -48,6 +48,14 @@ void *startKomWatek(void *ptr)
                 removeRequestFromQueue(pakiet.src);
                 break;
 
+            case UPDATE:
+                debug("Otrzymałem UPDATE od %d. Nowy stan: p=%d, k=%d", pakiet.src, pakiet.p_val, pakiet.k_val);
+                pthread_mutex_lock(&csMut);
+                p = pakiet.p_val;
+                k = pakiet.k_val;
+                pthread_mutex_unlock(&csMut);
+                break;
+
             default:
                 debug("Nieznany typ wiadomości: %d", status.MPI_TAG);
                 break;
