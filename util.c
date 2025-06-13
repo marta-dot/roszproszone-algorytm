@@ -54,7 +54,7 @@ void inicjuj_typ_pakietu()
     MPI_Type_commit(&MPI_PAKIET_T);
 }
 
-/* opis patrz util.h */
+
 void sendPacket(packet_t *pkt, int destination, int tag)
 {
     int freepkt=0;
@@ -90,7 +90,7 @@ int comparePackets(const void *a, const void *b){
 void addRequestToQueue(packet_t *pkt){
     pthread_mutex_lock(&queueMut);
 
-    // Sprawdź czy żądanie już nie istnieje w kolejce
+    // Czy już istnieje
     for (int i = 0; i < queueSize; i++) {
         if (requestQueue[i].src == pkt->src) {
             pthread_mutex_unlock(&queueMut);
@@ -105,7 +105,7 @@ void addRequestToQueue(packet_t *pkt){
         debug("Dodałem do kolejki REQUEST od %d (ts = %d), rozmiar kolejki: %d",
               pkt->src, pkt->ts, queueSize);
 
-        // Debug: wyświetl całą kolejkę
+        //wyświetla całą kolejkę
         debug("Kolejka żądań:");
         for (int i = 0; i < queueSize; i++) {
             debug("  [%d] src=%d, ts=%d", i, requestQueue[i].src, requestQueue[i].ts);
@@ -153,7 +153,12 @@ void incrementClock(int recived_ts){
 void enterCS() {
     debug("Wszedłem do sekcji krytycznej. Wykonuję akcję.");
 
-    // Mamy gwarancję, że możemy wykonać akcję, więc robimy to bez sprawdzania
+    int czas_pracy_us = 1000000 + (random() % 9000000);
+
+    debug("Czas produkcji/konsumpcji: %.2f sekundy.", (float)czas_pracy_us / 1000000.0);
+
+    usleep(czas_pracy_us);
+
     pthread_mutex_lock(&csMut);
     if (processType == 'B') {
         p--;
@@ -166,8 +171,8 @@ void enterCS() {
     }
     debug("STAN PO ZMIANIE: Słoiki: %d, Konfitury: %d", p, k);
 
-    // Rozgłaszamy UPDATE ze zmienionym stanem
-    debug("Rozgłaszam zaktualizowany stan zasobów.");
+    // UPDATE ze zmienionym stanem
+    debug("Zaktualizowany stan zasobów.");
     packet_t update_pkt;
     update_pkt.src = rank;
     update_pkt.p_val = p;
@@ -185,14 +190,14 @@ void enterCS() {
     }
     pthread_mutex_unlock(&csMut);
 
-    // Po wykonanej pracy, zwalniamy kolejkę używając naszej nowej funkcji
+    // release
     giveUpTurn();
 
     debug("Wyszedłem z sekcji krytycznej po udanej operacji.");
 }
 
 int canEnterCS() {
-    // Sprawdzenie ogólnych warunków Lamporta
+    // czy czekamy na CS i czy mamy wszystkie ACK
     pthread_mutex_lock(&waitingMut);
     if (!waitingForCS) {
         pthread_mutex_unlock(&waitingMut);
@@ -204,38 +209,66 @@ int canEnterCS() {
     int allAcksReceived = (ackCount >= (size - 1));
     pthread_mutex_unlock(&stateMut);
 
-    if (!allAcksReceived || !amIFirstInQueue()) {
-        return 0; // Nie nasza kolej, czekamy dalej
+    if (!allAcksReceived) {
+        return 0;
     }
 
-    // --- OSTATECZNY SPRAWDZIAN ZASOBÓW ---
-    // Mamy wszystkie ACK i jesteśmy pierwsi w kolejce.
-    // Sprawdzamy, czy nasza akcja jest w ogóle możliwa.
+    // Sprawdzenie pozycji w kolejce
+    int my_position = -1;
+    pthread_mutex_lock(&queueMut);
+    for (int i = 0; i < queueSize; i++) {
+        if (requestQueue[i].src == rank) {
+            my_position = i;
+            break;
+        }
+    }
+
+    int am_i_in_top_group = (my_position != -1 && my_position < csCapacity);
+
+    if (!am_i_in_top_group) {
+        pthread_mutex_unlock(&queueMut);
+        return 0; // Nie załapliśmy się
+    }
+
+    // Załapaliśmy się
+    // ile procesów danego typu jest w grupie wejściowej (top `csCapacity`)
+    int babcie_w_grupie = 0;
+    int studentki_w_grupie = 0;
+    for(int i = 0; i < csCapacity && i < queueSize; i++) {
+        if (requestQueue[i].type == 'B') {
+            babcie_w_grupie++;
+        } else {
+            studentki_w_grupie++;
+        }
+    }
+    pthread_mutex_unlock(&queueMut);
+
+    // czy wystarczy?
     int resource_available = 0;
     pthread_mutex_lock(&csMut);
-    if (processType == 'B' && p > 0) {
+    if (processType == 'B' && p >= babcie_w_grupie) {
         resource_available = 1;
-    } else if (processType == 'S' && k > 0) {
+    } else if (processType == 'S' && k >= studentki_w_grupie) {
         resource_available = 1;
     }
     pthread_mutex_unlock(&csMut);
 
     if (resource_available) {
-        // Tak, zasoby są dostępne. Możemy wejść.
-        debug("Wszystkie warunki spełnione. Wejście do CS dozwolone.");
-        return 1; // Zwracamy TRUE
+        // wchodzimy do cs
+        debug("Jestem w top %d i są zasoby dla %d babć i %d studentek. WCHODZĘ.", csCapacity, babcie_w_grupie, studentki_w_grupie);
+        return 1;
     } else {
-        // Nie, zasobów nie ma. Musimy zrezygnować z naszej tury, aby nie blokować innych.
-        debug("Mam pierwszeństwo, ale brak zasobów. ZWALNIAM KOLEJKĘ.");
-        giveUpTurn(); // Zwalniamy miejsce w kolejce
-        return 0; // Zwracamy FALSE
+        // nie wchodzimy do cs
+        debug("Jestem w top %d, ale BRAK zasobów dla grupy. Zwalniam kolejkę.", csCapacity);
+        giveUpTurn(); // robimy release
+        return 0;
     }
 }
 
 void giveUpTurn() {
     debug("Zwalniam kolejkę i resetuję stan.");
 
-    // Wysyłamy RELEASE do wszystkich, informując, że skończyliśmy
+    //  RELEASE do wszystkich
     packet_t release;
     release.src = rank;
     release.type = processType;
@@ -251,16 +284,15 @@ void giveUpTurn() {
         }
     }
 
-    // Sprzątamy po sobie
-    removeRequestFromQueue(rank); // Usuwamy swoje żądanie z kolejki
+    removeRequestFromQueue(rank);
 
     pthread_mutex_lock(&stateMut);
-    ackCount = 0; // Resetujemy liczniki
+    ackCount = 0; // reset licznika
     pthread_mutex_unlock(&stateMut);
 
     pthread_mutex_lock(&waitingMut);
     waitingForCS = 0;
     pthread_mutex_unlock(&waitingMut);
 
-    changeState(InRun); // Wracamy do normalnego działania
+    changeState(InRun); // od początku
 }

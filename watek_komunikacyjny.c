@@ -61,7 +61,7 @@ void *startKomWatek(void *ptr)
                 break;
         }
 
-        // Sprawdź czy można wejść do sekcji krytycznej
+        // czy można wejść do sekcji krytycznej
         if (stan != InSection && canEnterCS()) {
             debug("Mogę wejść do sekcji krytycznej!");
             changeState(InSection);
