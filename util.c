@@ -61,7 +61,7 @@ void sendPacket(packet_t *pkt, int destination, int tag)
     if (pkt==0) { pkt = malloc(sizeof(packet_t)); freepkt=1;}
     pkt->src = rank;
     MPI_Send( pkt, 1, MPI_PAKIET_T, destination, tag, MPI_COMM_WORLD);
-    debug("Wysyłam %s do %d\n", tag2string( tag), destination);
+    // debug("Wysyłam %s do %d\n", tag2string( tag), destination);
     if (freepkt) free(pkt);
 }
 
@@ -94,7 +94,7 @@ void addRequestToQueue(packet_t *pkt){
     for (int i = 0; i < queueSize; i++) {
         if (requestQueue[i].src == pkt->src) {
             pthread_mutex_unlock(&queueMut);
-            debug("Żądanie od %d już jest w kolejce", pkt->src);
+            // debug("Żądanie od %d już jest w kolejce", pkt->src);
             return;
         }
     }
@@ -102,13 +102,13 @@ void addRequestToQueue(packet_t *pkt){
     if (queueSize < MAX_QUEUE) {
         requestQueue[queueSize++] = *pkt;
         qsort(requestQueue, queueSize, sizeof(packet_t), comparePackets);
-        debug("Dodałem do kolejki REQUEST od %d (ts = %d), rozmiar kolejki: %d",
-              pkt->src, pkt->ts, queueSize);
+        // debug("Dodałem do kolejki REQUEST od %d (ts = %d), rozmiar kolejki: %d",
+            //   pkt->src, pkt->ts, queueSize);
 
         //wyświetla całą kolejkę
-        debug("Kolejka żądań:");
+        // debug("Kolejka żądań:");
         for (int i = 0; i < queueSize; i++) {
-            debug("  [%d] src=%d, ts=%d", i, requestQueue[i].src, requestQueue[i].ts);
+            // debug("  [%d] src=%d, ts=%d", i, requestQueue[i].src, requestQueue[i].ts);
         }
     } else {
         debug("BŁĄD: Kolejka żądań jest pełna!");
@@ -139,6 +139,85 @@ int amIFirstInQueue(){
     return first;
 }
 
+//Zwraca indeks pierwszego procesu w kolejce, który MOŻE wejść do sekcji krytycznej
+int firstEligibleInQueue() {
+    pthread_mutex_lock(&queueMut);
+    pthread_mutex_lock(&csMut);
+    int idx = -1;
+    int local_p = p, local_k = k;
+    for (int i = 0; i < queueSize; i++) {
+        char t = requestQueue[i].type;
+        if (t == 'B' && local_p >= 1) {
+            idx = i;
+            break;
+        }
+        if (t == 'S' && local_k >= 1) {
+            idx = i;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&csMut);
+    pthread_mutex_unlock(&queueMut);
+    return idx;
+}
+
+int canEnterCS() {
+    //czekanie na sekcję i otrzymanie wszystkich ACK
+    pthread_mutex_lock(&waitingMut);
+    if (!waitingForCS) {
+        pthread_mutex_unlock(&waitingMut);
+        return 0;
+    }
+    pthread_mutex_unlock(&waitingMut);
+
+    pthread_mutex_lock(&ackMut);
+    int allAcksReceived = (ackCount >= (size - 1));
+    pthread_mutex_unlock(&ackMut);
+
+    if (!allAcksReceived) {
+        return 0;
+    }
+
+    // Sprawdź, czy jestem pierwszym MOŻLIWYM do wejścia w kolejce
+    pthread_mutex_lock(&queueMut);
+    int myIdx = -1;
+    for (int i = 0; i < queueSize; i++) {
+        if (requestQueue[i].src == rank) {
+            myIdx = i;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&queueMut);
+
+    int eligibleIdx = firstEligibleInQueue();
+
+    //wersja bez debugów
+    // if (myIdx == eligibleIdx && eligibleIdx != -1) {
+    //     // debug("Jestem pierwszym możliwym do wejścia w kolejce.");
+    //     return 1;
+    // }
+
+    if (myIdx == eligibleIdx && eligibleIdx != -1) {
+        // debug("Jestem pierwszym możliwym do wejścia w kolejce.");
+        pthread_mutex_lock(&csMut);
+        if (processType == 'B' && p >= 1) { 
+            debug("Jestem pierwszy w kolejce i zasoby (p:%d, k:%d) SĄ dostępne. WCHODZĘ.", p, k);
+            pthread_mutex_unlock(&csMut);
+            return 1; 
+        } else if (processType == 'S' && k >= 1) { 
+            debug("Jestem pierwszy w kolejce i zasoby (p:%d, k:%d) SĄ dostępne. WCHODZĘ.", p, k);
+            pthread_mutex_unlock(&csMut);
+            return 1; 
+        } else {
+            debug("Jestem pierwszy, ale BRAK zasobów (p:%d, k:%d). Czekam na zwolnienie.", p, k);
+            pthread_mutex_unlock(&csMut);
+            return 0; // Nie, muszę czekać.
+        }
+    }
+    
+    return 0;
+}
+
 //zegar lamporta
 
 void incrementClock(int recived_ts){
@@ -151,11 +230,11 @@ void incrementClock(int recived_ts){
 
 // //sekcja krytyczna
 void enterCS() {
-    debug("Wszedłem do sekcji krytycznej. Wykonuję akcję.");
+    // debug("Wszedłem do sekcji krytycznej. Wykonuję akcję.");
 
     int czas_pracy_us = 1000000 + (random() % 9000000);
 
-    debug("Czas produkcji/konsumpcji: %.2f sekundy.", (float)czas_pracy_us / 1000000.0);
+    // debug("Czas produkcji/konsumpcji: %.2f sekundy.", (float)czas_pracy_us / 1000000.0);
 
     usleep(czas_pracy_us);
 
@@ -172,7 +251,7 @@ void enterCS() {
     debug("STAN PO ZMIANIE: Słoiki: %d, Konfitury: %d", p, k);
 
     // UPDATE ze zmienionym stanem
-    debug("Zaktualizowany stan zasobów.");
+    // debug("Zaktualizowany stan zasobów.");
     packet_t update_pkt;
     update_pkt.src = rank;
     update_pkt.p_val = p;
@@ -193,106 +272,89 @@ void enterCS() {
     // release
     giveUpTurn();
 
-    debug("Wyszedłem z sekcji krytycznej po udanej operacji.");
+    // debug("Wyszedłem z sekcji krytycznej po udanej operacji.");
 }
 
-int canEnterCS() {
-    // czy czekamy na CS i czy mamy wszystkie ACK
-    pthread_mutex_lock(&waitingMut);
-    if (!waitingForCS) {
-        pthread_mutex_unlock(&waitingMut);
-        return 0;
-    }
-    pthread_mutex_unlock(&waitingMut);
+// int canEnterCS() {
+//     //czekanie na sekcję i otrzymanie wszystkich ACK
+//     pthread_mutex_lock(&waitingMut);
+//     if (!waitingForCS) {
+//         pthread_mutex_unlock(&waitingMut);
+//         return 0;
+//     }
+//     pthread_mutex_unlock(&waitingMut);
 
-    pthread_mutex_lock(&stateMut);
-    int allAcksReceived = (ackCount >= (size - 1));
-    pthread_mutex_unlock(&stateMut);
+//     pthread_mutex_lock(&ackMut);
+//     int allAcksReceived = (ackCount >= (size - 1));
+//     pthread_mutex_unlock(&ackMut);
 
-    if (!allAcksReceived) {
-        return 0;
-    }
+//     if (!allAcksReceived) {
+//         return 0;
+//     }
 
-    // Sprawdzenie pozycji w kolejce
-    int my_position = -1;
-    pthread_mutex_lock(&queueMut);
-    for (int i = 0; i < queueSize; i++) {
-        if (requestQueue[i].src == rank) {
-            my_position = i;
-            break;
-        }
-    }
+//     //sprawdzenie, czy jestem pierwszy w kolejce i czy mam zasoby
+//     pthread_mutex_lock(&queueMut);
+//     pthread_mutex_lock(&csMut);
 
-    int am_i_in_top_group = (my_position != -1 && my_position < csCapacity);
+//     //sprawdzam, czy w ogóle jestem w kolejce i czy jestem na jej szczycie
+//     if (queueSize > 0 && requestQueue[0].src == rank) {
+//         // Jestem pierwszy. Czy zasoby są dostępne dla MNIE?
+//         int resource_available = 0;
+//         if (processType == 'B' && p >= 1) { 
+//             resource_available = 1;
+//         } else if (processType == 'S' && k >= 1) { 
+//             resource_available = 1;
+//         }
 
-    if (!am_i_in_top_group) {
-        pthread_mutex_unlock(&queueMut);
-        return 0; // Nie załapliśmy się
-    }
-
-    // Załapaliśmy się
-    // ile procesów danego typu jest w grupie wejściowej (top `csCapacity`)
-    int babcie_w_grupie = 0;
-    int studentki_w_grupie = 0;
-    for(int i = 0; i < csCapacity && i < queueSize; i++) {
-        if (requestQueue[i].type == 'B') {
-            babcie_w_grupie++;
-        } else {
-            studentki_w_grupie++;
-        }
-    }
-    pthread_mutex_unlock(&queueMut);
-
-    // czy wystarczy?
-    int resource_available = 0;
-    pthread_mutex_lock(&csMut);
-    if (processType == 'B' && p >= babcie_w_grupie) {
-        resource_available = 1;
-    } else if (processType == 'S' && k >= studentki_w_grupie) {
-        resource_available = 1;
-    }
-    pthread_mutex_unlock(&csMut);
-
-    if (resource_available) {
-        // wchodzimy do cs
-        debug("Jestem w top %d i są zasoby dla %d babć i %d studentek. WCHODZĘ.", csCapacity, babcie_w_grupie, studentki_w_grupie);
-        return 1;
-    } else {
-        // nie wchodzimy do cs
-        debug("Jestem w top %d, ale BRAK zasobów dla grupy. Zwalniam kolejkę.", csCapacity);
-        giveUpTurn(); // robimy release
-        return 0;
-    }
-}
+//         if (resource_available) {
+//             debug("Jestem pierwszy w kolejce i zasoby (p:%d, k:%d) SĄ dostępne. WCHODZĘ.", p, k);
+//             pthread_mutex_unlock(&csMut);
+//             pthread_mutex_unlock(&queueMut);
+//             return 1; 
+//         } else {
+//             debug("Jestem pierwszy, ale BRAK zasobów (p:%d, k:%d). Czekam na zwolnienie.", p, k);
+//             pthread_mutex_unlock(&csMut);
+//             pthread_mutex_unlock(&queueMut);
+//             return 0; // Nie, muszę czekać.
+//         }
+//     } else {
+//         // Nie jestem pierwszy w kolejce, więc czekam na swoją kolej.
+//         pthread_mutex_unlock(&csMut);
+//         pthread_mutex_unlock(&queueMut);
+//         return 0; // Nie, czekam.
+//     }
+// }
 
 void giveUpTurn() {
-    debug("Zwalniam kolejkę i resetuję stan.");
+    // debug("Zwalniam kolejkę po wykonaniu zadania i resetuję stan.");
 
-    //  RELEASE do wszystkich
-    packet_t release;
-    release.src = rank;
-    release.type = processType;
+    // Wyślij RELEASE do wszystkich
+    packet_t release_pkt;
+    release_pkt.src = rank;
+    release_pkt.type = processType;
 
     pthread_mutex_lock(&clockMut);
     lamportClock++;
-    release.ts = lamportClock;
+    release_pkt.ts = lamportClock;
     pthread_mutex_unlock(&clockMut);
 
     for (int i = 0; i < size; i++) {
         if (i != rank) {
-            sendPacket(&release, i, RELEASE);
+            sendPacket(&release_pkt, i, RELEASE);
         }
     }
 
+    // Usuń swoje żądanie z kolejki
     removeRequestFromQueue(rank);
 
-    pthread_mutex_lock(&stateMut);
-    ackCount = 0; // reset licznika
-    pthread_mutex_unlock(&stateMut);
+    // Zresetuj licznik ACK i flagę oczekiwania
+    pthread_mutex_lock(&ackMut);
+    ackCount = 0;
+    pthread_mutex_unlock(&ackMut);
 
     pthread_mutex_lock(&waitingMut);
     waitingForCS = 0;
     pthread_mutex_unlock(&waitingMut);
 
-    changeState(InRun); // od początku
+    changeState(InRun); // Powrót do stanu początkowego, gotowość do nowej pracy
 }

@@ -8,7 +8,7 @@ void mainLoop()
     while (stan != InFinish) {
         switch(stan) {
             case InRun:
-                debug("Chcę wejść do sekcji krytycznej - wysyłam REQUESTy");
+                // debug("Chcę wejść do sekcji krytycznej - wysyłam REQUESTy");
 
                 packet_t req;
                 req.type = processType;
@@ -37,7 +37,7 @@ void mainLoop()
                 }
 
                 changeState(IWait);
-                debug("Wysłałem REQUESTy, teraz czekam na odpowiedzi");
+                // debug("Wysłałem REQUESTy, teraz czekam na odpowiedzi");
                 break;
 
             case IWait:
