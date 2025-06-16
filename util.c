@@ -162,7 +162,6 @@ int firstEligibleInQueue() {
 }
 
 int canEnterCS() {
-    //czekanie na sekcję i otrzymanie wszystkich ACK
     pthread_mutex_lock(&waitingMut);
     if (!waitingForCS) {
         pthread_mutex_unlock(&waitingMut);
@@ -178,43 +177,33 @@ int canEnterCS() {
         return 0;
     }
 
-    // Sprawdź, czy jestem pierwszym MOŻLIWYM do wejścia w kolejce
     pthread_mutex_lock(&queueMut);
-    int myIdx = -1;
+    pthread_mutex_lock(&csMut);
+
+    int available_p = p;
+    int available_k = k;
     for (int i = 0; i < queueSize; i++) {
         if (requestQueue[i].src == rank) {
-            myIdx = i;
+            // Czy dla mnie wystarczy zasobów?
+            if (processType == 'B' && available_p >= 1) {
+                pthread_mutex_unlock(&csMut);
+                pthread_mutex_unlock(&queueMut);
+                return 1;
+            }
+            if (processType == 'S' && available_k >= 1) {
+                pthread_mutex_unlock(&csMut);
+                pthread_mutex_unlock(&queueMut);
+                return 1;
+            }
             break;
         }
+        // Odejmij zasoby zajęte przez wcześniejsze procesy
+        if (requestQueue[i].type == 'B') available_p--;
+        if (requestQueue[i].type == 'S') available_k--;
     }
+
+    pthread_mutex_unlock(&csMut);
     pthread_mutex_unlock(&queueMut);
-
-    int eligibleIdx = firstEligibleInQueue();
-
-    //wersja bez debugów
-    // if (myIdx == eligibleIdx && eligibleIdx != -1) {
-    //     // debug("Jestem pierwszym możliwym do wejścia w kolejce.");
-    //     return 1;
-    // }
-
-    if (myIdx == eligibleIdx && eligibleIdx != -1) {
-        // debug("Jestem pierwszym możliwym do wejścia w kolejce.");
-        pthread_mutex_lock(&csMut);
-        if (processType == 'B' && p >= 1) { 
-            debug("Jestem pierwszy w kolejce i zasoby (p:%d, k:%d) SĄ dostępne. WCHODZĘ.", p, k);
-            pthread_mutex_unlock(&csMut);
-            return 1; 
-        } else if (processType == 'S' && k >= 1) { 
-            debug("Jestem pierwszy w kolejce i zasoby (p:%d, k:%d) SĄ dostępne. WCHODZĘ.", p, k);
-            pthread_mutex_unlock(&csMut);
-            return 1; 
-        } else {
-            debug("Jestem pierwszy, ale BRAK zasobów (p:%d, k:%d). Czekam na zwolnienie.", p, k);
-            pthread_mutex_unlock(&csMut);
-            return 0; // Nie, muszę czekać.
-        }
-    }
-    
     return 0;
 }
 
@@ -231,12 +220,9 @@ void incrementClock(int recived_ts){
 // //sekcja krytyczna
 void enterCS() {
     // debug("Wszedłem do sekcji krytycznej. Wykonuję akcję.");
+    printf("Proces %d wchodzi do sekcji krytycznej (typ: %c)\n", rank, processType);
 
-    int czas_pracy_us = 1000000 + (random() % 9000000);
-
-    // debug("Czas produkcji/konsumpcji: %.2f sekundy.", (float)czas_pracy_us / 1000000.0);
-
-    usleep(czas_pracy_us);
+    sleep(5); // <-- tutaj proces "zajmuje" sekcję krytyczną przez 5 sekund
 
     pthread_mutex_lock(&csMut);
     if (processType == 'B') {
